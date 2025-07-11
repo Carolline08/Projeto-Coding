@@ -66,14 +66,22 @@ python gui.py
 👩‍💻 Desenvolvido por
 
 Anna Alice Oliveira, 
+
 Carolline Barbosa Ferreira, 
+
 Jai Santos Silva, 
+
 Marcelly Arcanjo Soares da Silva, 
+
 Maria Clara Moutinho Albuquerque
 
 Contatos: 
 
 carollinebarbosa225@gmail.com
+
 jaiofarc@hotmail.com
+
 marcellyarcanjo7@gmail.com
+
 Moutinhomaria2910@gmail.com
+
