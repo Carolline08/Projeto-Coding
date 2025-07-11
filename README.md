@@ -49,8 +49,8 @@ A aplicação foi desenvolvida com Python, utilizando a biblioteca Tkinter para 
 
 1. Clone este repositório:
    ```bash
-   git clone https://github.com/seu-usuario/seu-repositorio.git
-   cd seu-repositorio
+   git clone https://github.com/Carolline08/Projeto-Coding.git
+   cd Projeto-Coding
 
 Instale as dependências:
 
@@ -74,9 +74,6 @@ Maria Clara Moutinho Albuquerque
 Contatos: 
 
 carollinebarbosa225@gmail.com
-
 jaiofarc@hotmail.com
-
 marcellyarcanjo7@gmail.com
-
 Moutinhomaria2910@gmail.com
