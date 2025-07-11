@@ -51,6 +51,7 @@ A aplicação foi desenvolvida com Python, utilizando a biblioteca Tkinter para 
    ```bash
    git clone https://github.com/seu-usuario/seu-repositorio.git
    cd seu-repositorio
+
 Instale as dependências:
 
 pip install -r requirements.txt
