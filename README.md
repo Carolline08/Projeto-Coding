@@ -53,29 +53,21 @@ A aplicação foi desenvolvida com Python, utilizando a biblioteca Tkinter para 
    cd seu-repositorio
 Instale as dependências:
 
-bash
-Copiar
-Editar
 pip install -r requirements.txt
+
 Ou manualmente:
 
-bash
-Copiar
-Editar
 pip install pillow reportlab
-Execute o sistema:
 
-bash
-Copiar
-Editar
+Execute o sistema:
 python gui.py
 
 👩‍💻 Desenvolvido por
 
-Anna Alice Oliveira
-Carolline Barbosa Ferreira
-Jai Santos Silva
-Marcelly Arcanjo Soares da Silva
+Anna Alice Oliveira, 
+Carolline Barbosa Ferreira, 
+Jai Santos Silva, 
+Marcelly Arcanjo Soares da Silva, 
 Maria Clara Moutinho Albuquerque
 
 Contatos: 
