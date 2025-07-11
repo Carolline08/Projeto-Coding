@@ -1,0 +1,610 @@
+import sqlite3
+import os
+import io
+from tkinter import messagebox
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image as ReportLabImage, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from PIL import Image
+
+class SistemaAcademicoDB:
+    """
+    Gerencia todas as operações do banco de dados (CRUD) e a geração de PDFs.
+    """
+    def __init__(self, db_name='escola_gui.db'):
+        """Inicializa a conexão com o banco de dados e cria/migra as tabelas."""
+        self.conn = sqlite3.connect(db_name)
+        self.cursor = self.conn.cursor()
+        self._criar_e_migrar_tabelas()
+
+    def _criar_e_migrar_tabelas(self):
+        """Cria as tabelas se não existirem e adiciona a coluna nome_social se necessário."""
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alunos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                imagem TEXT,
+                sexo TEXT NOT NULL,
+                data_nascimento DATE,
+                curso TEXT NOT NULL
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS disciplinas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT UNIQUE NOT NULL
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notas (
+                aluno_id INTEGER,
+                disciplina_id INTEGER,
+                nota_b1 REAL,
+                nota_b2 REAL,
+                nota_b3 REAL,
+                nota_b4 REAL,
+                FOREIGN KEY (aluno_id) REFERENCES alunos(id) ON DELETE CASCADE,
+                FOREIGN KEY (disciplina_id) REFERENCES disciplinas(id) ON DELETE CASCADE,
+                PRIMARY KEY (aluno_id, disciplina_id)
+            )
+        ''')
+
+        self.cursor.execute("PRAGMA table_info(alunos)")
+        colunas_alunos = [col[1] for col in self.cursor.fetchall()]
+        if 'nome_social' not in colunas_alunos:
+            try:
+                self.cursor.execute("ALTER TABLE alunos ADD COLUMN nome_social TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+        self.conn.commit()
+
+    # --- CRUD Alunos ---
+    def cadastrar_aluno(self, nome, nome_social, email, imagem, sexo, data_nascimento, curso):
+        try:
+            self.cursor.execute("INSERT INTO alunos (nome, nome_social, email, imagem, sexo, data_nascimento, curso) VALUES (?, ?, ?, ?, ?, ?, ?)", (nome, nome_social, email, imagem, sexo, data_nascimento, curso))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_all_alunos(self):
+        self.cursor.execute("SELECT id, COALESCE(NULLIF(nome_social, ''), nome), email FROM alunos")
+        return self.cursor.fetchall()
+
+    def get_aluno_por_id(self, aluno_id):
+        self.cursor.execute("SELECT id, nome, nome_social, email, imagem,sexo, data_nascimento, curso FROM alunos WHERE id = ?", (aluno_id,))
+        return self.cursor.fetchone()
+
+    def atualizar_aluno(self, aluno_id, nome, nome_social, email, imagem,sexo, data_nascimento, curso):
+        try:
+            self.cursor.execute("UPDATE alunos SET nome = ?, nome_social = ?, email = ?, imagem = ?, sexo = ?, data_nascimento =?, curso= ? WHERE id = ?", (nome, nome_social, email, imagem, sexo, data_nascimento, curso, aluno_id))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+    def deletar_aluno(self, aluno_id):
+        self.cursor.execute("DELETE FROM alunos WHERE id = ?", (aluno_id,))
+        self.conn.commit()
+
+    # --- CRUD Disciplinas ---
+    def cadastrar_disciplina(self, nome):
+        try:
+            self.cursor.execute("INSERT INTO disciplinas (nome) VALUES (?)", (nome,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_all_disciplinas(self):
+        self.cursor.execute("SELECT id, nome FROM disciplinas")
+        return self.cursor.fetchall()
+
+    def deletar_disciplina(self, disciplina_id):
+        self.cursor.execute("DELETE FROM disciplinas WHERE id = ?", (disciplina_id,))
+        self.conn.commit()
+
+    # --- CRUD Notas ---
+    def inserir_notas(self, aluno_id, disciplina_id, notas):
+        self.cursor.execute(
+            "REPLACE INTO notas (aluno_id, disciplina_id, nota_b1, nota_b2, nota_b3, nota_b4) VALUES (?, ?, ?, ?, ?, ?)",
+            (aluno_id, disciplina_id, *notas)
+        )
+        self.conn.commit()
+
+    def get_notas_por_aluno(self, aluno_id):
+        self.cursor.execute("""
+            SELECT d.nome, n.nota_b1, n.nota_b2, n.nota_b3, n.nota_b4
+            FROM notas n
+            JOIN disciplinas d ON n.disciplina_id = d.id
+            WHERE n.aluno_id = ?
+        """, (aluno_id,))
+        return self.cursor.fetchall()
+
+    # --- Geração de Boletim ---
+    def gerar_boletim_pdf(self, aluno_id):
+        aluno_info = self.get_aluno_por_id(aluno_id)
+        if not aluno_info:
+            messagebox.showerror("Erro", f"Aluno com ID {aluno_id} não encontrado.")
+            return
+
+        notas_aluno = self.get_notas_por_aluno(aluno_id)
+        if not notas_aluno:
+            messagebox.showwarning("Aviso", f"Não há notas para gerar o boletim do aluno {aluno_info[1]}.")
+            return
+
+        id_aluno, nome_aluno, nome_social_aluno, email_aluno, imagem_path, sexo, data_nascimento, curso = aluno_info
+
+
+        nome_exibicao = nome_social_aluno if nome_social_aluno else nome_aluno
+        
+        nome_arquivo = f"boletim_{nome_exibicao.replace(' ', '_')}.pdf"
+        doc = SimpleDocTemplate(nome_arquivo, pagesize=letter)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        # --- Cabeçalho com Foto ---
+        header_data = []
+        header_info_col = []
+
+        # Adiciona a imagem se ela existir
+        if imagem_path and os.path.exists(imagem_path):
+            try:
+                # Corta e redimensiona a imagem para o PDF
+                img = Image.open(imagem_path)
+                
+                original_width, original_height = img.size
+                aspect_ratio = 3/4
+                original_aspect = original_width / original_height
+
+                if original_aspect > aspect_ratio:
+                    new_width = int(aspect_ratio * original_height)
+                    offset = (original_width - new_width) // 2
+                    img = img.crop((offset, 0, original_width - offset, original_height))
+                elif original_aspect < aspect_ratio:
+                    new_height = int(original_width / aspect_ratio)
+                    offset = (original_height - new_height) // 2
+                    img = img.crop((0, offset, original_width, original_height - offset))
+
+                # CORREÇÃO: Salva a imagem processada em um buffer de memória para o ReportLab
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='PNG')
+                img_buffer.seek(0) # Volta para o início do buffer
+
+                # Cria um objeto de imagem para o ReportLab a partir do buffer
+                img_pdf = ReportLabImage(img_buffer, width=1.5*inch, height=2*inch)
+                img_pdf.hAlign = 'CENTER'
+                header_data.append([img_pdf])
+            except Exception as e:
+                print(f"Erro ao processar imagem para PDF: {e}") # Log do erro para debug
+                header_data.append([Paragraph("Erro ao carregar imagem", styles['Normal'])])
+        else:
+             header_data.append([Paragraph("Sem foto", styles['Normal'])])
+
+        # Adiciona as informações de texto
+        header_info_col.append(Paragraph(f"<b>BOLETIM ESCOLAR</b>", styles['h2']))
+        header_info_col.append(Paragraph(f"<b>{nome_exibicao.upper()}</b>", styles['h3']))
+        header_info_col.append(Spacer(1, 0.1*inch))
+        header_info_col.append(Paragraph(f"<b>Matrícula:</b> {id_aluno}", styles['Normal']))
+        header_info_col.append(Paragraph(f"<b>Email:</b> {email_aluno}", styles['Normal']))
+        header_info_col.append(Paragraph(f"<b>Data de Nascimento:</b> {data_nascimento}", styles['Normal']))
+        header_info_col.append(Paragraph(f"<b>Curso:</b> {curso}", styles['Normal']))
+        header_data[0].append(header_info_col)
+
+        header_table = Table(header_data, colWidths=[1.7*inch, 5.8*inch])
+        header_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (1, 0), (1, -1), 0),
+        ]))
+        
+        elements.append(header_table)
+        elements.append(Spacer(1, 0.3*inch))
+
+        # --- Tabela de Notas ---
+        dados_tabela = [["Disciplina", "B1", "B2", "B3", "B4", "Média Final", "Situação"]]
+        for nome_disciplina, b1, b2, b3, b4 in notas_aluno:
+            notas = [b1 or 0, b2 or 0, b3 or 0, b4 or 0]
+            media = sum(notas) / len(notas)
+            situacao = "Aprovado" if media >= 6.0 else "Reprovado"
+            dados_tabela.append([nome_disciplina, f"{notas[0]:.1f}", f"{notas[1]:.1f}", f"{notas[2]:.1f}", f"{notas[3]:.1f}", f"{media:.2f}", situacao])
+
+        tabela = Table(dados_tabela, colWidths=[150, 50, 50, 50, 50, 80, 80])
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), '#4F81BD'), ('TEXTCOLOR', (0, 0), (-1, 0), 'whitesmoke'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), '#DCE6F1'), ('GRID', (0, 0), (-1, -1), 1, 'black')
+        ])
+        tabela.setStyle(style)
+        elements.append(tabela)
+
+        doc.build(elements)
+        messagebox.showinfo("Sucesso", f"Boletim gerado com sucesso!\nArquivo: '{nome_arquivo}'")
+        try:
+            if os.name == 'nt': os.startfile(nome_arquivo)
+            else: os.system(f'open "{nome_arquivo}"')
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir o PDF automaticamente: {e}")
+
+    def __del__(self):
+        self.conn.close()
+import os
+from tkinter import Tk, Frame, Label, Entry, Button, ttk, filedialog, messagebox, PhotoImage, StringVar
+from PIL import Image, ImageTk
+from db import SistemaAcademicoDB
+
+class App(Tk):
+    """
+    Gerencia a interface gráfica da aplicação.
+    """
+    def __init__(self):
+        super().__init__()
+        self.title("Sistema de Registro Acadêmico")
+        self.geometry("900x600")
+        self.db = SistemaAcademicoDB()
+        self.caminho_imagem = ""
+        self.aluno_id_selecionado = None
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(pady=10, padx=10, fill="both", expand=True)
+
+        self.aba_alunos = Frame(notebook)
+        self.aba_disciplinas = Frame(notebook)
+        self.aba_notas = Frame(notebook)
+
+        notebook.add(self.aba_alunos, text="Alunos")
+        notebook.add(self.aba_disciplinas, text="Disciplinas")
+        notebook.add(self.aba_notas, text="Notas e Boletim")
+
+        self._criar_aba_alunos()
+        self._criar_aba_disciplinas()
+        self._criar_aba_notas()
+
+    # --- ABA ALUNOS ---
+    def _criar_aba_alunos(self):
+        form_frame = Frame(self.aba_alunos)
+        form_frame.pack(pady=10, padx=10, fill="x")
+
+        Label(form_frame, text="Nome de Registro:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.entry_nome_aluno = Entry(form_frame, width=40)
+        self.entry_nome_aluno.grid(row=0, column=1, padx=5, pady=5)
+
+        Label(form_frame, text="Nome Social:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.entry_nome_social = Entry(form_frame, width=40)
+        self.entry_nome_social.grid(row=1, column=1, padx=5, pady=5)
+
+        Label(form_frame, text="Email:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.entry_email_aluno = Entry(form_frame, width=40)
+        self.entry_email_aluno.grid(row=2, column=1, padx=5, pady=5)
+        
+        Label(form_frame, text="Data de Nascimento:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.entry_data_nascimento = Entry(form_frame, width=40)
+        self.entry_data_nascimento.grid(row=3, column=1, padx=5, pady=5)
+
+        Label(form_frame, text="Curso:").grid(row=4, column=0, padx=5, pady=5, sticky="W")
+        self.entry_curso = Entry(form_frame, width=40)
+        self.entry_curso.grid(row=4, column=1, padx=5, pady=5)
+
+        Label(form_frame, text="Gênero:").grid(row=5, column=0, padx=5, pady=5, sticky="W")
+        self.var_sexo = StringVar()
+
+        self.combo_sexo = ttk.Combobox(form_frame, state="readonly", textvariable=self.var_sexo, values=[ "Feminino", "Masculino", "Não binário", "Gênero fluido",
+        "Agênero", "Transgênero", "Mulher trans", "Homem trans",
+        "Outro", "Prefiro não informar"])
+        self.combo_sexo.grid(row=5, column=1, padx=0, pady=0, sticky= "W")
+     
+     
+        Button(form_frame, text="Selecionar Foto", command=self._selecionar_foto).grid(row=8, column=0, padx=5, pady=10)
+        self.label_foto = Label(form_frame, text="Nenhuma foto selecionada", relief="sunken")
+        self.label_foto.grid(row=0, column=2, rowspan=4, padx=20)
+
+        botoes_frame = Frame(self.aba_alunos)
+        botoes_frame.pack(pady=10)
+        Button(botoes_frame, text="Cadastrar", command=self._cadastrar_aluno).pack(side="left", padx=5)
+        Button(botoes_frame, text="Atualizar", command=self._atualizar_aluno).pack(side="left", padx=5)
+        Button(botoes_frame, text="Deletar", command=self._deletar_aluno).pack(side="left", padx=5)
+        Button(botoes_frame, text="Limpar Campos", command=self._limpar_campos_aluno).pack(side="left", padx=5)
+
+        self.tree_alunos = ttk.Treeview(self.aba_alunos, columns=("ID", "Nome de Exibição", "Email"), show="headings")
+        self.tree_alunos.heading("ID", text="ID")
+        self.tree_alunos.heading("Nome de Exibição", text="Nome de Exibição")
+        self.tree_alunos.heading("Email", text="Email")
+        self.tree_alunos.column("ID", width=50)
+        self.tree_alunos.pack(pady=10, padx=10, fill="both", expand=True)
+        self.tree_alunos.bind("<<TreeviewSelect>>", self._on_aluno_select)
+        self._popular_lista_alunos()
+
+    def _crop_to_aspect_ratio(self, img, aspect_ratio=3/4):
+        original_width, original_height = img.size
+        original_aspect = original_width / original_height
+
+        if original_aspect > aspect_ratio:
+            new_width = int(aspect_ratio * original_height)
+            offset = (original_width - new_width) // 2
+            img = img.crop((offset, 0, original_width - offset, original_height))
+        elif original_aspect < aspect_ratio:
+            new_height = int(original_width / aspect_ratio)
+            offset = (original_height - new_height) // 2
+            img = img.crop((0, offset, original_width, original_height - offset))
+        
+        return img
+
+    def _selecionar_foto(self):
+        path = filedialog.askopenfilename(filetypes=[("Imagens", "*.jpg *.png *.jpeg")])
+        if path:
+            self.caminho_imagem = path
+            img = Image.open(path)
+            img = self._crop_to_aspect_ratio(img, aspect_ratio=3/4)
+            img.thumbnail((150, 200))
+            self.foto_tk = ImageTk.PhotoImage(img)
+            self.label_foto.config(image=self.foto_tk, text="")
+        
+    def _popular_lista_alunos(self):
+        for i in self.tree_alunos.get_children():
+            self.tree_alunos.delete(i)
+        for aluno in self.db.get_all_alunos():
+            self.tree_alunos.insert("", "end", values=aluno)
+
+    def _on_aluno_select(self, event):
+        selected_items = self.tree_alunos.selection()
+        if not selected_items: return
+
+        item_id_str = selected_items[0]
+        item_values = self.tree_alunos.item(item_id_str, 'values')
+        
+        if not item_values: return
+
+        self.aluno_id_selecionado = item_values[0]
+        aluno_data = self.db.get_aluno_por_id(self.aluno_id_selecionado)
+        if not aluno_data:
+            messagebox.showerror("Erro", "Não foi possível encontrar os dados do aluno.")
+            return
+
+        self.entry_nome_aluno.delete(0, "end")
+        self.entry_nome_social.delete(0, "end")
+        self.entry_email_aluno.delete(0, "end")
+        self.entry_data_nascimento.delete(0, "end")
+        self.entry_curso.delete(0, "end")
+
+        self.entry_nome_aluno.insert(0, aluno_data[1])
+        self.entry_nome_social.insert(0, aluno_data[2] or "")
+        self.entry_email_aluno.insert(0, aluno_data[3])
+        self.entry_data_nascimento.insert(0, aluno_data[4])
+        self.entry_curso.insert(0, aluno_data[5])
+        self.caminho_imagem = aluno_data[6]
+        
+        
+        if self.caminho_imagem and os.path.exists(self.caminho_imagem):
+            try:
+                img = Image.open(self.caminho_imagem)
+                img = self._crop_to_aspect_ratio(img, aspect_ratio=3/4)
+                img.thumbnail((150, 200))
+                self.foto_tk = ImageTk.PhotoImage(img)
+                self.label_foto.config(image=self.foto_tk, text="")
+            except Exception:
+                self.label_foto.config(image="", text="Erro ao carregar foto")
+        else:
+            self.label_foto.config(image="", text="Foto não encontrada")
+
+    def _cadastrar_aluno(self):
+        nome = self.entry_nome_aluno.get()
+        nome_social = self.entry_nome_social.get()
+        email = self.entry_email_aluno.get()
+        sexo = self.var_sexo.get()
+        data_nascimento = self.entry_data_nascimento.get()
+        curso = self.entry_curso.get()
+
+        if not nome or not email:
+            messagebox.showerror("Erro", "Nome de Registro e Email são obrigatórios.")
+            return
+        if self.db.cadastrar_aluno(nome, nome_social, email, self.caminho_imagem, sexo, data_nascimento, curso):
+            messagebox.showinfo("Sucesso", "Aluno cadastrado com sucesso!")
+            self._popular_lista_alunos()
+            self._popular_comboboxes()
+            self._limpar_campos_aluno()
+        else:
+            messagebox.showerror("Erro", "O email fornecido já está em uso.")
+
+    def _atualizar_aluno(self):
+        if not self.aluno_id_selecionado:
+            messagebox.showerror("Erro", "Selecione um aluno na lista para atualizar.")
+            return
+        nome = self.entry_nome_aluno.get()
+        nome_social = self.entry_nome_social.get()
+        email = self.entry_email_aluno.get()
+        sexo = self.var_sexo.get()
+        curso = self.entry_curso.get()
+        data_nascimento = self.entry_data_nascimento.get()
+
+        if self.db.atualizar_aluno (self.aluno_id_selecionado, nome, nome_social, email, self.caminho_imagem, sexo, data_nascimento, curso):
+            messagebox.showinfo("Sucesso", "Aluno atualizado com sucesso!")
+            self._popular_lista_alunos()
+            self._popular_comboboxes()
+            self._limpar_campos_aluno()
+        else:
+            messagebox.showerror("Erro", "Ocorreu um erro ao atualizar. O email pode já estar em uso.")
+            
+    def _deletar_aluno(self):
+        if not self.aluno_id_selecionado:
+            messagebox.showerror("Erro", "Selecione um aluno na lista para deletar.")
+            return
+        if messagebox.askyesno("Confirmar", "Tem certeza que deseja deletar este aluno? Todas as suas notas serão perdidas."):
+            self.db.deletar_aluno(self.aluno_id_selecionado)
+            messagebox.showinfo("Sucesso", "Aluno deletado com sucesso.")
+            self._popular_lista_alunos()
+            self._popular_comboboxes()
+            self._limpar_campos_aluno()
+
+    def _limpar_campos_aluno(self):
+        self.entry_nome_aluno.delete(0, "end")
+        self.entry_nome_social.delete(0, "end")
+        self.entry_email_aluno.delete(0, "end")
+        self.var_sexo.set("")
+        self.entry_data_nascimento.delete(0, "end")
+        self.entry_curso.delete(0, "end")
+        self.caminho_imagem = ""
+        self.label_foto.config(image="", text="Nenhuma foto selecionada")
+        self.aluno_id_selecionado = None
+        if self.tree_alunos.selection():
+            self.tree_alunos.selection_remove(self.tree_alunos.selection()[0])
+
+    # --- ABA DISCIPLINAS ---
+    def _criar_aba_disciplinas(self):
+        form_frame = Frame(self.aba_disciplinas)
+        form_frame.pack(pady=10, padx=10)
+        Label(form_frame, text="Nome da Disciplina:").pack(side="left", padx=5)
+        self.entry_nome_disciplina = Entry(form_frame, width=30)
+        self.entry_nome_disciplina.pack(side="left", padx=5)
+        Button(form_frame, text="Cadastrar", command=self._cadastrar_disciplina).pack(side="left", padx=5)
+        Button(form_frame, text="Deletar Selecionada", command=self._deletar_disciplina).pack(side="left", padx=5)
+
+        self.tree_disciplinas = ttk.Treeview(self.aba_disciplinas, columns=("ID", "Nome"), show="headings")
+        self.tree_disciplinas.heading("ID", text="ID")
+        self.tree_disciplinas.heading("Nome", text="Nome da Disciplina")
+        self.tree_disciplinas.pack(pady=10, padx=10, fill="both", expand=True)
+        self._popular_lista_disciplinas()
+
+    def _popular_lista_disciplinas(self):
+        for i in self.tree_disciplinas.get_children():
+            self.tree_disciplinas.delete(i)
+        for disc in self.db.get_all_disciplinas():
+            self.tree_disciplinas.insert("", "end", values=disc)
+
+    def _cadastrar_disciplina(self):
+        nome = self.entry_nome_disciplina.get()
+        if not nome:
+            messagebox.showerror("Erro", "O nome da disciplina é obrigatório.")
+            return
+        if self.db.cadastrar_disciplina(nome):
+            messagebox.showinfo("Sucesso", "Disciplina cadastrada.")
+            self.entry_nome_disciplina.delete(0, "end")
+            self._popular_lista_disciplinas()
+            self._popular_comboboxes()
+        else:
+            messagebox.showerror("Erro", "Essa disciplina já existe.")
+
+    def _deletar_disciplina(self):
+        selected_item = self.tree_disciplinas.selection()
+        if not selected_item:
+            messagebox.showerror("Erro", "Selecione uma disciplina para deletar.")
+            return
+        item = self.tree_disciplinas.item(selected_item)
+        disciplina_id = item['values'][0]
+        if messagebox.askyesno("Confirmar", "Tem certeza que deseja deletar esta disciplina? Todas as notas associadas serão perdidas."):
+            self.db.deletar_disciplina(disciplina_id)
+            messagebox.showinfo("Sucesso", "Disciplina deletada.")
+            self._popular_lista_disciplinas()
+            self._popular_comboboxes()
+
+    # --- ABA NOTAS ---
+    def _criar_aba_notas(self):
+        form_frame = Frame(self.aba_notas)
+        form_frame.pack(pady=10, padx=10, fill="x")
+
+        Label(form_frame, text="Aluno:").grid(row=0, column=0, padx=5, pady=5)
+        self.combo_alunos = ttk.Combobox(form_frame, state="readonly", width=30)
+        self.combo_alunos.grid(row=0, column=1, padx=5, pady=5)
+        
+        Label(form_frame, text="Disciplina:").grid(row=0, column=2, padx=5, pady=5)
+        self.combo_disciplinas = ttk.Combobox(form_frame, state="readonly", width=30)
+        self.combo_disciplinas.grid(row=0, column=3, padx=5, pady=5)
+
+        notas_frame = Frame(form_frame)
+        notas_frame.grid(row=1, column=0, columnspan=4, pady=10)
+        Label(notas_frame, text="Nota B1:").pack(side="left", padx=5)
+        self.entry_b1 = Entry(notas_frame, width=5)
+        self.entry_b1.pack(side="left")
+        Label(notas_frame, text="Nota B2:").pack(side="left", padx=5)
+        self.entry_b2 = Entry(notas_frame, width=5)
+        self.entry_b2.pack(side="left")
+        Label(notas_frame, text="Nota B3:").pack(side="left", padx=5)
+        self.entry_b3 = Entry(notas_frame, width=5)
+        self.entry_b3.pack(side="left")
+        Label(notas_frame, text="Nota B4:").pack(side="left", padx=5)
+        self.entry_b4 = Entry(notas_frame, width=5)
+        self.entry_b4.pack(side="left")
+
+        botoes_frame = Frame(self.aba_notas)
+        botoes_frame.pack(pady=10)
+        Button(botoes_frame, text="Salvar Notas", command=self._salvar_notas).pack(side="left", padx=10)
+        Button(botoes_frame, text="Gerar Boletim (PDF)", command=self._gerar_boletim).pack(side="left", padx=10)
+
+        self.tree_notas = ttk.Treeview(self.aba_notas, columns=("Disciplina", "B1", "B2", "B3", "B4"), show="headings")
+        self.tree_notas.heading("Disciplina", text="Disciplina")
+        self.tree_notas.heading("B1", text="B1")
+        self.tree_notas.heading("B2", text="B2")
+        self.tree_notas.heading("B3", text="B3")
+        self.tree_notas.heading("B4", text="B4")
+        self.tree_notas.pack(pady=10, padx=10, fill="both", expand=True)
+
+        self.combo_alunos.bind("<<ComboboxSelected>>", self._on_aluno_notas_select)
+        self._popular_comboboxes()
+
+    def _popular_comboboxes(self):
+        self.combo_alunos.set('')
+        self.combo_disciplinas.set('')
+        
+        alunos = self.db.get_all_alunos()
+        self.alunos_map = {f"{id} - {nome}": id for id, nome, email in alunos}
+        self.combo_alunos['values'] = list(self.alunos_map.keys())
+
+        disciplinas = self.db.get_all_disciplinas()
+        self.disciplinas_map = {f"{id} - {nome}": id for id, nome in disciplinas}
+        self.combo_disciplinas['values'] = list(self.disciplinas_map.keys())
+
+    def _on_aluno_notas_select(self, event):
+        aluno_selecionado_str = self.combo_alunos.get()
+        if not aluno_selecionado_str: return
+        aluno_id = self.alunos_map[aluno_selecionado_str]
+        
+        for i in self.tree_notas.get_children():
+            self.tree_notas.delete(i)
+        
+        notas = self.db.get_notas_por_aluno(aluno_id)
+        for nota in notas:
+            self.tree_notas.insert("", "end", values=nota)
+
+    def _salvar_notas(self):
+        aluno_str = self.combo_alunos.get()
+        disc_str = self.combo_disciplinas.get()
+        if not aluno_str or not disc_str:
+            messagebox.showerror("Erro", "Selecione um aluno e uma disciplina.")
+            return
+        
+        try:
+            notas = [
+                float(self.entry_b1.get()), float(self.entry_b2.get()),
+                float(self.entry_b3.get()), float(self.entry_b4.get())
+            ]
+        except (ValueError, TypeError):
+            messagebox.showerror("Erro", "Todas as notas devem ser números válidos.")
+            return
+
+        aluno_id = self.alunos_map[aluno_str]
+        disciplina_id = self.disciplinas_map[disc_str]
+        
+        self.db.inserir_notas(aluno_id, disciplina_id, notas)
+        messagebox.showinfo("Sucesso", "Notas salvas com sucesso.")
+        self._on_aluno_notas_select(None)
+
+    def _gerar_boletim(self):
+        aluno_str = self.combo_alunos.get()
+        if not aluno_str:
+            messagebox.showerror("Erro", "Selecione um aluno para gerar o boletim.")
+            return
+        aluno_id = self.alunos_map[aluno_str]
+        self.db.gerar_boletim_pdf(aluno_id)
+from gui import App
+
+if __name__ == "__main__":
+    """
+    Ponto de entrada principal da aplicação.
+    Cria uma instância da interface gráfica e a executa.
+    """
+    app = App()
+    app.mainloop()
