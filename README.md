@@ -1,4 +1,4 @@
-# Registô_Acadêmico_de_Alunos
+# Registro_Acadêmico_de_Alunos
 Esse projeto é um sistema de gerenciamentos de estudantes, disciplinas e notas desenvolvidos em Python com interface gráfica feita em Tkinter e persistência em dados via SQLite. 
 
 🎓 Sistema de Registro Acadêmico com Interface Gráfica (Tkinter + SQLite)
